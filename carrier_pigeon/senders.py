@@ -3,10 +3,18 @@
 import os
 import os.path
 import logging
+from datetime import datetime
 
 from abc import abstractmethod
 from ftplib import FTP, error_perm
-from datetime import datetime
+
+# FTP_TLS is not in py2.6
+try:
+    from ftplib import FTP_TLS
+except:
+    from carrier_pigeon.lib.ftplib import FTP_TLS
+
+import paramiko
 
 from django.conf import settings
 from django.template.defaultfilters import date as format_date
@@ -95,21 +103,24 @@ class DummySender(DefaultSender):
 
 
 class FTPSender(DefaultSender):
+    ftp_class = FTP
+
+    def _connect(self, file_path, target_url):
+        ftp = self.ftp_class(timeout=30)
+        ftp.connect(target_url.domain, target_url.port)
+        logging.debug(u"_send_file(): connected to %s on port %s" %
+                      (target_url.domain, target_url.port if target_url.port \
+                           else u"[default]"))
+
+        ftp.login(target_url.login, target_url.password)
+        logging.debug(u"_send_file(): logged in")
+
+        return ftp
 
     def _send_file(self, file_path, target_url, row=None):
         """ Send the file by FTP using information found in url. """
 
-        ftp = FTP(timeout=30)
-        ftp.connect(target_url.domain, target_url.port)
-        logging.debug(u"_send_file(): connected to %s on port %s"
-            % (target_url.domain, target_url.port if target_url.port \
-                 else u"[default]"))
-
-        if target_url.login:
-            ftp.login(target_url.login, target_url.password)
-        else:
-            target_url.login()
-        logging.debug(u"_send_file(): logged in")
+        ftp = self._connect(file_path, target_url)
 
         target_path = os.path.join(
             target_url.path,
@@ -139,5 +150,59 @@ class FTPSender(DefaultSender):
         f.close()
         ftp.quit()
         logging.debug(u"_send_file(): disconnected")
+
+        return True
+
+
+class FTPSSender(FTPSender):
+    ftp_class = FTP_TLS
+
+    def _connect(self, file_path, target_url):
+        ftp = super(FTPSSender, self)._connect(file_path, target_url)
+        ftp.prot_p()
+        return ftp
+
+
+class SFTPSender(DefaultSender):
+
+    def _connect(self, file_path, target_url):
+        self.client = paramiko.SSHClient()
+
+        self.client.set_missing_host_key_policy(paramiko.MissingHostKeyPolicy())
+
+        self.client.connect(
+            target_url.domain,
+            port=target_url.port if target_url.port else 22,
+            username=target_url.login,
+            password=target_url.password
+        )
+
+        sftp = self.client.open_sftp()
+        sftp.chdir('.')
+
+        return sftp
+
+    def _send_file(self, file_path, target_url, row=None):
+        sftp = self._connect(file_path, target_url)
+
+        target_path = os.path.join(
+            sftp.getcwd() + target_url.path,
+            self.get_relative_directory_for_file(file_path)
+        )
+
+        logging.debug(u"_send_file(): target_path: %s" % target_path)
+
+        try:
+            sftp.mkdir(target_path)
+        except:
+            logging.debug(u"_send_file(): target_path already exists")
+
+        filename = os.path.split(file_path)[1]
+        logging.debug(u"_send_file(): filename: %s" % filename)
+
+        sftp.put(file_path, os.path.join(target_path, filename))
+        logging.debug(u"_send_file(): push ok")
+
+        sftp.close()
 
         return True

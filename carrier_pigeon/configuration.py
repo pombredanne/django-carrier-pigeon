@@ -8,8 +8,8 @@ import logging
 from django.conf import settings
 
 from carrier_pigeon.models import ItemToPush
-from carrier_pigeon.senders import DummySender, FTPSender
-from carrier_pigeon.utils import URL, TreeHash, zipdir
+from carrier_pigeon.senders import DummySender, FTPSender, FTPSSender, SFTPSender
+from carrier_pigeon.utils import URL
 
 
 logger = logging.getLogger('carrier_pigeon.configuration')
@@ -27,6 +27,8 @@ class DefaultConfiguration(object):
 
     SENDER_MAPPING = {
         'ftp': FTPSender,
+        'ftps': FTPSSender,
+        'sftp': SFTPSender,
         'dummy': DummySender,
     }
 
@@ -157,6 +159,8 @@ class DefaultConfiguration(object):
                 row,
             )
             if not output:
+                logger.error("Error for item %i with Output Maker %s"
+                            % (item.pk, output_maker))
                 continue
 
             # --- Validate output
@@ -175,11 +179,19 @@ class DefaultConfiguration(object):
                         default=False
                     )
                     if not validation:
+                        logger.error("Validation error for item %i with"
+                                    " validator %s"
+                                    % (
+                                        item.pk,
+                                        validator_class
+                                    ))
                         break  # escape from first for loop
 
                 if not validation:  # --- If one validator did not pass we
                                     #      do no want to send the file
-                    logger.debug('the output was not validated')
+                    logger.error("the output was not validated for item : %i"
+                                % item.pk
+                                )
                     continue  # We don't want the export process to be stopped
                               # Jump to next output
 
@@ -196,6 +208,7 @@ class DefaultConfiguration(object):
             )
 
             if local_final_path:
+                logger.warning("File added to output: %s" % local_final_path)
                 output_files.append(local_final_path)
 
         # --- Manage related items, if any
